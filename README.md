@@ -1,4 +1,6 @@
-# Project 03 starter: do fast diffusion samplers lose rare outcomes?
+# RARE: Rare-event Analysis of Reverse-diffusion Error
+
+Project 03 starter: do fast diffusion samplers lose rare outcomes?
 
 ## Question
 A generative model may represent a rare kind of example correctly, yet a fast sampling procedure may produce that kind too often or too rarely. Is the error caused by how rare it is, how close it is to other kinds, or where the sampler spends its steps?
