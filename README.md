@@ -18,10 +18,10 @@ A generated point has no observed latent component label. The starter therefore 
 Use Python 3.11 or later. In Colab, upload and unzip this entire package, then change into its directory.
 
     pip install -r requirements.txt
-    python check_data.py
-    python starter.py --quick
-    python starter.py --steps 8 16 32
-    python starter.py --steps 8 16 32 --schedule quadratic --output quadratic.json
+    python src/starter/check_data.py
+    python src/starter/starter.py --quick
+    python src/starter/starter.py --steps 8 16 32
+    python src/starter/starter.py --steps 8 16 32 --schedule quadratic --output quadratic.json
 
 The starter follows a deterministic probability-flow ordinary differential equation from Gaussian noise variance 16 down to zero. Its derivative is minus one-half the score. Explicit Euler integration is deliberately simple: it uses the current direction to take each step. The supplied formula and code are a bridge from the course's diffusion models; no stochastic-calculus derivation is required.
 
