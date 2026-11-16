@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 import json
 import numpy as np
 import matplotlib
@@ -6,6 +7,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from starter import ROOT, sample, rare_region
 
 FIGDIR = ROOT / "figures"
@@ -65,6 +67,50 @@ def story_figure(name, split, steps=32):
     fig.savefig(out)
     plt.close(fig)
     return out, true_pct, got_pct
+
+
+def fast_vs_slow_figure(name, split, fast=4, slow=128):
+    d = load_case(name, split)
+    means, weights = d["means"], d["weights"]
+    reference, terminal = d["reference"], d["terminal"]
+    base = float(d["base_variance"])
+    vmax = float(d["terminal_variance"])
+
+    ref_rare = rare_region(reference, means)
+    true_pct = ref_rare.mean() * 100
+
+    gen_fast = sample(terminal, vmax * np.linspace(1, 0, fast + 1), means, weights, base)
+    gen_slow = sample(terminal, vmax * np.linspace(1, 0, slow + 1), means, weights, base)
+    fast_rare = rare_region(gen_fast, means)
+    slow_rare = rare_region(gen_slow, means)
+    fast_pct = fast_rare.mean() * 100
+    slow_pct = slow_rare.mean() * 100
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    ax = axes[0]
+    blob(ax, reference[~ref_rare], "#9bbcd6", alpha=0.12)
+    blob(ax, reference[ref_rare], "#e06666", alpha=0.2)
+    ax.scatter(means[:, 0], means[:, 1], marker="*", c="k", zorder=5)
+    style(ax, f"truth  (red = {true_pct:.0f}%)")
+
+    ax = axes[1]
+    blob(ax, gen_fast[~fast_rare], "#9bbcd6", alpha=0.18)
+    blob(ax, gen_fast[fast_rare], "#e06666", alpha=0.3)
+    ax.scatter(means[:, 0], means[:, 1], marker="*", c="k", zorder=5)
+    style(ax, f"fast: {fast} steps  (red = {fast_pct:.0f}%)")
+
+    ax = axes[2]
+    blob(ax, gen_slow[~slow_rare], "#9bbcd6", alpha=0.18)
+    blob(ax, gen_slow[slow_rare], "#e06666", alpha=0.3)
+    ax.scatter(means[:, 0], means[:, 1], marker="*", c="k", zorder=5)
+    style(ax, f"slow: {slow} steps  (red = {slow_pct:.0f}%)")
+
+    fig.tight_layout()
+    out = FIGDIR / f"fast_vs_slow_{name}.png"
+    fig.savefig(out)
+    plt.close(fig)
+    return out, true_pct, fast_pct, slow_pct
 
 
 def process_figure(name, split, n_steps=6, n_points=4000, seed=0):
@@ -195,6 +241,12 @@ def main():
     named = [(name, by_name[name]["split"]) for name in highlight]
     out = stepsize_figure(named)
     print(f"Step-size figure: {out.name}")
+
+    print("Fast-vs-slow figures:")
+    for name in ["development_r0.02_s0.8_seed940", "development_r0.02_s2.0_seed940"]:
+        c = by_name[name]
+        out, true_pct, fast_pct, slow_pct = fast_vs_slow_figure(name, c["split"])
+        print(f"  {out.name:45s} truth {true_pct:4.1f}%  fast {fast_pct:4.1f}%  slow {slow_pct:4.1f}%")
     print(f"\nAll figures saved under: {FIGDIR}")
 
 
