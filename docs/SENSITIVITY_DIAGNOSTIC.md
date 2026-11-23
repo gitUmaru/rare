@@ -88,14 +88,19 @@ For a sample sitting at position $x$ when the noise level is $v_0$, we do this:
 4. The *sensitivity score* is the fraction of copies whose label differs from the
    original.
 
-As a formula:
+As a formula, with $\Phi$ standing for the final rare label of a finished sample:
 
 $$
-S(x, v_0) = \frac{1}{K} \sum_{k=1}^{K} \mathbf{1}\big[\, \ell(\text{finish}(x + \delta_k)) \neq \ell(\text{finish}(x)) \,\big]
+\Phi_{v_0}(x) = \ell(\text{finish}(x)), \qquad
+S(x, v_0) = \frac{1}{K} \sum_{k=1}^{K} \big|\, \Phi_{v_0}(x) - \Phi_{v_0}(x + \delta_k) \,\big|
 $$
 
-Read $\mathbf{1}[\cdot]$ as "1 if the thing inside is true, otherwise 0". The function
-$\text{finish}(\cdot)$ means "walk from $v_0$ down to $0$". The nudge is Gaussian noise
+The function $\text{finish}(\cdot)$ means "walk from $v_0$ down to $0$". The symbol
+$\Phi$ is the downstream evaluation metric, as in the critical period paper. There it is
+classification accuracy, and the sensitivity is $\Phi$ of the clean run minus $\Phi$ of
+the damaged run. Here $\Phi$ is 0 or 1, so we take the absolute difference, which counts
+a flip in either direction. It equals 1 exactly when the label changes, so this is the
+same count as before and none of the numbers below change. The nudge is Gaussian noise
 whose size is 20% of the noise already present at that level:
 
 $$
@@ -120,6 +125,8 @@ axis from "training epoch" to "noise level":
 
 | In the paper | In this note |
 |---|---|
+| Downstream evaluation metric $\Phi$, such as classification accuracy | $\Phi$, the rare label of the finished sample (0 or 1) |
+| Sensitivity $S(t_0) = \Phi(f_\theta) - \Phi(f_{\theta'})$, clean minus damaged | $S(x, v_0)$, the average of $\lvert \Phi(x) - \Phi(x + \delta_k) \rvert$ over $K$ nudges |
 | Damage the training data at epoch $t_0$ and see how much it hurts later | Nudge the sample at noise level $v_0$ and see whether the final label changes |
 | Damage the data for a short window of epochs | Replace a window of the walk with one big step (Result 4) |
 | Fisher information: how sensitive the model is to small changes in its parameters | The squared length of the score arrow, $\lVert s(x, v)\rVert^2$, which measures how sensitive the density is to a small shift in $x$ |
