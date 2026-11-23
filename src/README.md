@@ -7,6 +7,9 @@
 - `experiments/` — `Experiment` base class (`experiment_abc.py`) plus two torch
   experiments that replicate the starter results and the figures. No training is
   needed since the score is exact, so `train()` is a no-op.
+- `experiments/sensitivity_experiment.py` — per-trajectory early-warning score for
+  spurious rare labels, with matched-cost baselines. Writes `results/sensitivity/`.
+  Final cases stay locked until `frozen=True`. See `SENSITIVITY_DIAGNOSTIC.md`.
 - `plot_data.py` — the original numpy/matplotlib figure script.
 
 ## Running the torch replica
@@ -26,3 +29,7 @@ figures experiment writes `figures/torch_*.png`, replicas of the numpy figures.
 The torch code defaults to CPU and float64 to match the numpy starter exactly. It runs
 on Apple Silicon (MPS is available) by passing `device="mps"`, though float64 on MPS is
 limited, so CPU float64 is the default for numerical parity.
+
+```
+PYTHONPATH=src python -m experiments.sensitivity_experiment
+```
