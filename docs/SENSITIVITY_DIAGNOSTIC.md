@@ -282,6 +282,27 @@ $$
 where $f = 0.164$ is the average fraction of points the sampler calls rare (each of
 those pays 80 for scoring), and $p_\text{flag}$ is the fraction that get refined.
 
+**The brute-force baseline.** Run the 8-step sampler, and keep every answer it gives
+except one kind. If it called a point rare, throw that answer away and finish the point
+again from $v_0 = 8$ with 128 steps. Nothing decides which points to redo, so there is no
+detector and no scoring step. Every point the sampler called rare is redone, and every
+other point keeps its answer. That is safe because the sampler almost never calls a rare
+point "not rare" (1 miss in 60,000), so the points it did not call rare are nearly all
+correct. Out of 5,000 starting points the sampler calls about 820 rare, and about 451 of
+those are false alarms, so redoing all 820 leaves about 34 false alarms. The cost is
+$8 + f \times 128 \approx 29$ evaluations per starting point, the same formula as the
+gate with the detector term removed.
+
+**Why it beats the gate.** The gate pays 80 evaluations to score every point the sampler
+called rare, and then pays 128 more for each point it flags. The baseline pays only the 128
+for every rare call. So per rare call the gate costs $80 + 128 \times x$, where $x$ is the
+share it flags, and it is cheaper than the baseline only when $x$ is below
+$(128 - 80) / 128 = 37.5\%$. At $\tau = 0.25$ the gate flags 52%, so it pays about 147
+per rare call against 128. The stricter thresholds are cheaper than the baseline, at
+$\tau = 0.5$ (flags 27%, about 114 per rare call) and $\tau = 0.75$ (flags 10%, about 93).
+But they get that saving by leaving more false alarms in place, 279.5 and 385.5 per 5,000
+points against 34.4 for the baseline, so none of them matches its accuracy.
+
 **The comparisons**, all measured against the 1,024-step answer, as means over 12
 cases. "Disagreements" counts labels that differ, out of 5,000 per case. "Rate error" is
 the sampler's rare percentage minus the fine sampler's, in percentage points.
@@ -294,7 +315,7 @@ the sampler's rare percentage minus the fine sampler's, in percentage points.
 | 8 steps, spaced with more near the end | 8.0 | 227.7 | 4.55 |
 | 32 steps, spaced with more near the end | 32.0 | 56.8 | 1.14 |
 | 128 steps, spaced with more near the end | 128.0 | 7.1 | 0.14 |
-| **Refine every fast-rare point, no detector** | **29.0** | **34.5** | **0.69** |
+| **Redo every point the sampler called rare (no detector)** | **29.0** | **34.5** | **0.69** |
 | Gate, $\tau = 0.25$ | 32.0 | 138.4 | 2.77 |
 | Refine the same number of points, picked at random | 32.0 | 235.8 | 4.71 |
 | Even steps with the same total cost as the gate | 32.2 | 199.8 | 3.99 |
@@ -302,14 +323,14 @@ the sampler's rare percentage minus the fine sampler's, in percentage points.
 | Gate, $\tau = 0.75$ | 23.2 | 385.6 | 7.71 |
 
 ("Spaced with more near the end" is the starter's quadratic schedule, where the
-steps bunch up as $v$ approaches 0.) At $v_0 = 8$, $\tau = 0.25$ flags 53% of the
-fast-rare points, $\tau = 0.5$ flags 27%, and $\tau = 0.75$ flags 11%.
+steps bunch up as $v$ approaches 0.) At $v_0 = 8$, $\tau = 0.25$ flags 52% of the
+fast-rare points, $\tau = 0.5$ flags 27%, and $\tau = 0.75$ flags 10%.
 
 What this shows:
 
 - **The score is a real selector.** The gate beats refining at random in 11 of 12 cases
   and beats the equal-cost even grid in 10 of 12.
-- **But the detector does not pay for itself.** Refining *every* fast-rare point, with
+- **But the detector does not pay for itself.** Redoing *every* point the sampler called rare, with
   no detector, costs less (29.0 against 32.0) and leaves far fewer errors (34.5 against
   138.4). The reason is plain arithmetic. Scoring costs about 13 evaluations per
   starting point and saves only about 10 evaluations of refinement. It also beats a
@@ -319,9 +340,11 @@ What this shows:
   128 steps. A 32-step run spaced this way (56.8 disagreements) already beats a 128-step
   even run (62.9) at a quarter of the cost. This agrees with Result 4: the end of the
   walk is where the errors come from.
-- **When would a detector help?** When refinement is expensive or most points are flagged.
-  Here refinement is cheap and only 16% of points need it, so the brute-force baseline
-  wins.
+- **When would a detector help?** When scoring is cheap compared with a redo, and when it
+  can leave most points alone without losing accuracy. From the formula above, it needs
+  to flag under $(R - D) / R$ of the rare calls, where $R$ is the cost of a redo and $D$
+  the cost of scoring one point. Here $R = 128$ and $D = 80$, so that is 37.5%, and the
+  scores we tried cannot reach it while matching the baseline's accuracy.
 
 ## What we can and cannot claim
 
