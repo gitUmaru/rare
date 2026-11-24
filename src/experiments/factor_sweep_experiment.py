@@ -5,6 +5,8 @@ from pathlib import Path
 import numpy as np
 import torch
 import matplotlib
+import matplotlib.patches
+import matplotlib.colors
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -30,6 +32,53 @@ def exact_region_probability(separation, weight, sigma):
     return float((1.0 - weight) * upper * lower + weight * upper ** 2)
 
 
+def power_grid(terminal_variance, steps, rho):
+    u = torch.linspace(1.0, 0.0, steps + 1, dtype=torch.float64)
+    return float(terminal_variance) * u ** (2.0 * rho)
+
+
+def edm_grid(terminal_variance, steps, rho, sigma_min=0.002):
+    sigma_max = math.sqrt(terminal_variance)
+    i = torch.arange(steps, dtype=torch.float64)
+    sigma = (sigma_max ** (1 / rho) + i / (steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+    grid = torch.cat([sigma ** 2, torch.zeros(1, dtype=torch.float64)])
+    grid[0] = float(terminal_variance)
+    return grid
+
+
+def geometric_grid(terminal_variance, steps, sigma_min):
+    sigma_max = math.sqrt(terminal_variance)
+    i = torch.arange(steps, dtype=torch.float64)
+    sigma = sigma_max * (sigma_min / sigma_max) ** (i / (steps - 1))
+    return torch.cat([sigma ** 2, torch.zeros(1, dtype=torch.float64)])
+
+
+def two_piece_grid(terminal_variance, steps, fraction=0.5, cut=1.0):
+    sigma_max = math.sqrt(terminal_variance)
+    k = max(1, round(fraction * steps))
+    low = torch.linspace(cut, 0.0, k + 1, dtype=torch.float64)
+    high = torch.linspace(sigma_max, cut, steps - k + 1, dtype=torch.float64)[:-1]
+    return torch.cat([high, low]) ** 2
+
+
+SCHEDULE_LABELS = {
+    "uniform": "equal in v (uniform)",
+    "quadratic": "equal in sigma (quadratic)",
+    "power_1.5": "power, rho = 1.5",
+    "power_2": "power, rho = 2",
+    "power_4": "power, rho = 4",
+    "edm_7": "EDM, rho = 7",
+    "geometric": "log-spaced, sigma_min = 0.1",
+    "two_piece": "two-piece, half below sigma = 1",
+}
+
+
+SCHEDULE_SHORT = {
+    "uniform": "v-eq", "quadratic": "s-eq", "power_1.5": "p1.5", "power_2": "p2",
+    "power_4": "p4", "edm_7": "edm", "geometric": "log", "two_piece": "2pc",
+}
+
+
 def build_mixture(separation, weight):
     means = torch.tensor([[-separation, 0.0], [separation, 0.0], [0.0, separation]], dtype=torch.float64)
     weights = torch.tensor([(1.0 - weight) / 2, (1.0 - weight) / 2, weight], dtype=torch.float64)
@@ -53,6 +102,13 @@ class FactorSweepExperiment(Experiment):
         self.weights = config.get("weights", [0.005, 0.01, 0.02, 0.05, 0.1, 0.2])
         self.budgets = config.get("budgets", [4, 8, 16, 32, 64, 128, 256, 512])
         self.schedules = config.get("schedules", ["uniform", "quadratic"])
+        self.extra_schedules = config.get("extra_schedules", ["power_1.5", "power_2", "power_4", "edm_7", "geometric", "two_piece"])
+        self.extra_budgets = config.get("extra_budgets", [4, 8, 16, 32, 64, 128])
+        self.n_sw = config.get("n_sw", 20000)
+        self.n_proj = config.get("n_proj", 32)
+        self.scan_cells = [tuple(c) for c in config.get(
+            "scan_cells", [(0.8, 0.02), (1.0, 0.005), (2.0, 0.05), (0.4, 0.1), (3.2, 0.02)])]
+        self.cells = []
         self.n = config.get("n", 100000)
         self.n_margin = config.get("n_margin", 5000)
         self.sigma = config.get("sigma", 0.35)
@@ -72,9 +128,43 @@ class FactorSweepExperiment(Experiment):
         return None
 
     def _grid(self, schedule, steps):
+        T = self.terminal_variance
         if schedule == "uniform":
-            return uniform_grid(self.terminal_variance, steps)
-        return quadratic_grid(self.terminal_variance, steps)
+            return uniform_grid(T, steps)
+        if schedule == "quadratic":
+            return quadratic_grid(T, steps)
+        if schedule == "power_1.5":
+            return power_grid(T, steps, 1.5)
+        if schedule == "power_2":
+            return power_grid(T, steps, 2.0)
+        if schedule == "power_4":
+            return power_grid(T, steps, 4.0)
+        if schedule == "edm_7":
+            return edm_grid(T, steps, 7.0)
+        if schedule == "geometric":
+            return geometric_grid(T, steps, 0.1)
+        if schedule == "two_piece":
+            return two_piece_grid(T, steps)
+        raise ValueError(schedule)
+
+    def check_grids(self):
+        for schedule in self.schedules + self.extra_schedules:
+            for steps in sorted(set(self.budgets + self.extra_budgets)):
+                grid = self._grid(schedule, steps)
+                assert grid.numel() == steps + 1, (schedule, steps)
+                assert float(grid[0]) == self.terminal_variance and float(grid[-1]) == 0.0, (schedule, steps)
+                assert bool((grid[1:] < grid[:-1]).all()), (schedule, steps)
+        assert torch.equal(power_grid(16.0, 8, 0.5), uniform_grid(16.0, 8))
+        assert torch.equal(power_grid(16.0, 8, 1.0), quadratic_grid(16.0, 8))
+        return True
+
+    def _clean(self, means, weights, n, gen):
+        component = draw_components(weights, n, gen)
+        return means[component] + self.sigma * torch.randn(n, 2, generator=gen, dtype=torch.float64)
+
+    def _sliced(self, points, reference_sorted, directions):
+        projected = (points @ directions.T).sort(dim=0).values
+        return float((projected - reference_sorted).abs().mean())
 
     def _cell(self, i, j, separation, weight):
         gen = torch.Generator().manual_seed(self.seed + 1000 * i + j)
@@ -84,25 +174,39 @@ class FactorSweepExperiment(Experiment):
         start = means[component] + math.sqrt(self.sigma ** 2 + self.terminal_variance) * noise
         model = self.model_factory(means, weights, self.sigma ** 2)
         p = exact_region_probability(separation, weight, self.sigma)
+        ref_gen = torch.Generator().manual_seed(self.seed + 5000 + 1000 * i + j)
+        directions = torch.randn(self.n_proj, 2, generator=ref_gen, dtype=torch.float64)
+        directions = directions / directions.norm(dim=1, keepdim=True)
+        clean_a = self._clean(means, weights, self.n_sw, ref_gen)
+        clean_b = self._clean(means, weights, self.n_sw, ref_gen)
+        reference_sorted = (clean_a @ directions.T).sort(dim=0).values
+        floor = self._sliced(clean_b, reference_sorted, directions)
         rows = []
-        for schedule in self.schedules:
-            for steps in self.budgets:
+        for schedule in self.schedules + self.extra_schedules:
+            budgets = self.budgets if schedule in self.schedules else self.extra_budgets
+            for steps in budgets:
                 out = model.sample(start, self._grid(schedule, steps))
                 hits = int(rare_region(out, means).sum())
                 rows.append({"separation": separation, "weight": weight, "schedule": schedule,
-                             "steps": steps, "p": p, "hits": hits, "n": self.n})
-        return rows
+                             "steps": steps, "p": p, "hits": hits, "n": self.n,
+                             "sw": self._sliced(out[:self.n_sw], reference_sorted, directions)})
+        return rows, {"separation": separation, "weight": weight, "p": p, "sw_floor": floor}
 
     def validate(self):
         path = self.out_dir / "records.json"
-        if self.reuse and path.exists():
+        cells_path = self.out_dir / "cells.json"
+        if self.reuse and path.exists() and cells_path.exists():
+            self.cells = json.loads(cells_path.read_text())
             return json.loads(path.read_text())
-        records = []
+        records, self.cells = [], []
         for i, s in enumerate(self.separations):
             for j, w in enumerate(self.weights):
-                records.extend(self._cell(i, j, s, w))
+                rows, info = self._cell(i, j, s, w)
+                records.extend(rows)
+                self.cells.append(info)
             print(f"  separation {s:g} done")
         path.write_text(json.dumps(records))
+        cells_path.write_text(json.dumps(self.cells))
         return records
 
     def test(self, n=2_000_000, cells=((0.8, 0.02), (2.0, 0.08), (1.2, 0.005), (3.2, 0.2))):
@@ -208,6 +312,67 @@ class FactorSweepExperiment(Experiment):
                 }
             out["share_robustness"][str(budget)] = table
         (self.out_dir / "analysis.json").write_text(json.dumps(out, indent=2))
+        return out
+
+
+    def analyze_schedules(self, records):
+        index = self._index(records)
+        names = self.schedules + self.extra_schedules
+        common = sorted(set(self.budgets) & set(self.extra_budgets))
+        keys = [(c["separation"], c["weight"]) for c in self.cells]
+        floor = float(torch.tensor([c["sw_floor"] for c in self.cells]).median())
+
+        def err(sched, b, s_, w_):
+            r = index[(s_, w_, sched, b)]
+            return 100.0 * (r["hits"] / r["n"] - r["p"])
+
+        def sw(sched, b, s_, w_):
+            return index[(s_, w_, sched, b)]["sw"]
+
+        def reached(sched, s_, w_):
+            for b in common:
+                r = index[(s_, w_, sched, b)]
+                margin = 1.96 * math.sqrt(r["p"] * (1 - r["p"]) / self.n_margin)
+                if all(abs(index[(s_, w_, sched, c)]["hits"] / r["n"] - r["p"]) <= margin
+                       for c in common if c >= b):
+                    return b
+            return None
+
+        out = {"budgets": common, "schedules": names, "sw_floor_median": floor, "summary": {},
+               "regret": {}, "best": {}, "best_agreement": {}, "reached_by_128": {}}
+        for sched in names:
+            out["summary"][sched] = {}
+            for b in common:
+                e = torch.tensor([abs(err(sched, b, s_, w_)) for s_, w_ in keys])
+                signed = torch.tensor([err(sched, b, s_, w_) for s_, w_ in keys])
+                d = torch.tensor([sw(sched, b, s_, w_) for s_, w_ in keys])
+                out["summary"][sched][str(b)] = {
+                    "worst_pp": float(e.max()), "median_pp": float(e.median()), "mean_pp": float(e.mean()),
+                    "cells_above_1pp": int((e > 1.0).sum()), "min_signed_pp": float(signed.min()),
+                    "median_sw": float(d.median()), "worst_sw": float(d.max()),
+                }
+            needed = [reached(sched, s_, w_) for s_, w_ in keys]
+            out["reached_by_128"][sched] = {
+                "cells": sum(n is not None for n in needed),
+                "median_nfe": float(torch.tensor([n for n in needed if n is not None], dtype=torch.float64).median())
+                if any(n is not None for n in needed) else None,
+            }
+        for b in common:
+            regret = {sched: [] for sched in names}
+            best = {}
+            agree = 0
+            for s_, w_ in keys:
+                errs = {sched: abs(err(sched, b, s_, w_)) for sched in names}
+                top = min(errs.values())
+                for sched in names:
+                    regret[sched].append(errs[sched] - top)
+                best[(s_, w_)] = min(names, key=lambda x: errs[x])
+                dist = {sched: sw(sched, b, s_, w_) for sched in names}
+                agree += int(min(names, key=lambda x: dist[x]) == best[(s_, w_)])
+            out["regret"][str(b)] = {sched: {"worst": max(v), "mean": sum(v) / len(v)} for sched, v in regret.items()}
+            out["best"][str(b)] = {f"{k[0]}|{k[1]}": v for k, v in best.items()}
+            out["best_agreement"][str(b)] = agree / len(keys)
+        (self.out_dir / "schedule_analysis.json").write_text(json.dumps(out, indent=2))
         return out
 
     def _annotate(self, ax, array, norm, fmt, flip=0.6):
@@ -321,14 +486,95 @@ class FactorSweepExperiment(Experiment):
         plt.close(fig)
         return out
 
+
+    def figure_schedule_placement(self):
+        names = self.schedules + self.extra_schedules
+        steps_list = [8, 32]
+        fig, axes = plt.subplots(1, len(steps_list), figsize=(6.5 * len(steps_list), 5), squeeze=False)
+        for ax, N in zip(axes[0], steps_list):
+            for name in names:
+                sigma = self._grid(name, N).sqrt()
+                ax.plot(torch.linspace(0, 1, N + 1)[:-1].numpy(), sigma[:-1].numpy(), marker="o", markersize=3,
+                        label=SCHEDULE_LABELS[name])
+            ax.set_yscale("log")
+            ax.set_title(f"noise level sigma at each step, N = {N}")
+            ax.set_xlabel("step index / N")
+            ax.set_ylabel("sigma = sqrt(v), start of the step")
+            ax.grid(True, which="both", alpha=0.4)
+        axes[0, 0].legend(fontsize=8)
+        fig.tight_layout()
+        out = self.fig_dir / "factor_sweep_schedules.png"
+        fig.savefig(out)
+        plt.close(fig)
+        return out
+
+    def figure_schedule_performance(self, sched):
+        names = sched["schedules"]
+        budgets = sched["budgets"]
+        fig, axes = plt.subplots(1, 3, figsize=(19, 5.5))
+        panels = [("worst_pp", "worst error over 60 geometries (pp)"),
+                  ("median_pp", "median error over 60 geometries (pp)"),
+                  ("median_sw", "median sliced Wasserstein distance")]
+        cmap = plt.get_cmap("tab10")
+        for ax, (key, title) in zip(axes, panels):
+            for k, name in enumerate(names):
+                ax.plot(budgets, [sched["summary"][name][str(b)][key] for b in budgets], marker="o",
+                        color=cmap(k), linestyle="-" if name in self.schedules else "--", label=SCHEDULE_LABELS[name])
+            ax.set_xscale("log", base=2)
+            ax.set_yscale("log")
+            ax.set_xticks(budgets)
+            ax.set_xticklabels([str(b) for b in budgets])
+            ax.set_xlabel("NFE")
+            ax.set_title(title)
+            ax.grid(True, which="both", alpha=0.4)
+        axes[2].axhline(sched["sw_floor_median"], color="gray", linestyle=":")
+        axes[2].text(budgets[0], sched["sw_floor_median"] * 1.15, "sampling floor", color="gray", fontsize=8)
+        axes[0].legend(fontsize=8)
+        fig.tight_layout()
+        out = self.fig_dir / "factor_sweep_schedule_performance.png"
+        fig.savefig(out)
+        plt.close(fig)
+        return out
+
+    def figure_schedule_best(self, sched):
+        names = sched["schedules"]
+        cmap = plt.get_cmap("tab10")
+        budgets = [8, 32]
+        fig, axes = plt.subplots(1, len(budgets), figsize=(7.5 * len(budgets), 5.5), squeeze=False)
+        for ax, b in zip(axes[0], budgets):
+            grid = np.zeros((len(self.weights), len(self.separations)))
+            for i, s_ in enumerate(self.separations):
+                for j, w_ in enumerate(self.weights):
+                    grid[j, i] = names.index(sched["best"][str(b)][f"{s_}|{w_}"])
+            ax.imshow(grid, origin="lower", aspect="auto", interpolation="nearest", cmap=matplotlib.colors.ListedColormap(
+                [cmap(k) for k in range(len(names))]), vmin=-0.5, vmax=len(names) - 0.5)
+            for i in range(len(self.separations)):
+                for j in range(len(self.weights)):
+                    ax.text(i, j, SCHEDULE_SHORT[names[int(grid[j, i])]],
+                            ha="center", va="center", fontsize=7, color="white")
+            ax.set_title(f"schedule with the smallest error in each geometry, N = {b}")
+            self._axes(ax)
+        handles = [matplotlib.patches.Patch(color=cmap(k), label=f"{SCHEDULE_SHORT[n]}: {SCHEDULE_LABELS[n]}") for k, n in enumerate(names)]
+        fig.legend(handles=handles, loc="lower center", ncol=4, fontsize=8)
+        fig.tight_layout(rect=(0, 0.1, 1, 1))
+        out = self.fig_dir / "factor_sweep_schedule_best.png"
+        fig.savefig(out)
+        plt.close(fig)
+        return out
+
     def run(self):
         self.setup()
         self.train()
         checks = self.test()
         print("closed form vs Monte Carlo, z scores:", [round(c["z"], 2) for c in checks])
+        self.check_grids()
         records = self.validate()
         analysis = self.analyze(records)
-        for fig in (self.figure_heatmaps(records), self.figure_curves(records), self.figure_budget(analysis)):
+        sched = self.analyze_schedules(records)
+        figures = (self.figure_heatmaps(records), self.figure_curves(records), self.figure_budget(analysis),
+                   self.figure_schedule_placement(), self.figure_schedule_performance(sched),
+                   self.figure_schedule_best(sched))
+        for fig in figures:
             print("wrote", fig.name)
         return analysis
 

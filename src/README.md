@@ -11,7 +11,7 @@
   spurious rare labels, with matched-cost baselines. Writes `results/sensitivity/`.
   Final cases stay locked until `frozen=True`. See `docs/SENSITIVITY_DIAGNOSTIC.md`.
 - `experiments/factor_sweep_experiment.py` — sweeps separation, rare weight, step budget and
-  step spacing with the exact score and no network. Writes `results/factor_sweep/` and
+  step spacing (eight schedules) with the exact score and no network. Writes `results/factor_sweep/` and
   `figures/factor_sweep_*.png`. See `docs/FACTOR_SWEEP.md`.
 - `plot_data.py` — the original numpy/matplotlib figure script.
 
